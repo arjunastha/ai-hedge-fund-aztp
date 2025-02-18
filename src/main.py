@@ -1,10 +1,15 @@
 import sys
+import asyncio
+import os
+import json
+from typing import Dict, Any
 
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage
 from langgraph.graph import END, StateGraph
 from colorama import Fore, Back, Style, init
 import questionary
+from aztp_client import Aztp
 from agents.ben_graham import ben_graham_agent
 from agents.bill_ackman import bill_ackman_agent
 from agents.fundamentals import fundamentals_agent
@@ -31,6 +36,71 @@ load_dotenv()
 
 init(autoreset=True)
 
+async def secure_wrap_agents(client: Aztp) -> Dict[str, Any]:
+    """Wrap existing agents with secure connections."""
+    # Map of agent names to their instances
+    agents = {
+        "warren_buffett": warren_buffett_agent,
+        "ben_graham": ben_graham_agent,
+        "bill_ackman": bill_ackman_agent,
+        "fundamentals": fundamentals_agent,
+        "technicals": technical_analyst_agent,
+        "sentiment": sentiment_agent,
+        "valuation": valuation_agent,
+        "portfolio": portfolio_management_agent,
+        "risk": risk_management_agent
+    }
+    
+    # Map of agent keys to their AZTP-compliant names
+    aztp_names = {
+        "warren_buffett": "warren-buffett",
+        "ben_graham": "ben-graham",
+        "bill_ackman": "bill-ackman",
+        "fundamentals": "fundamentals",
+        "technicals": "technicals",
+        "sentiment": "sentiment",
+        "valuation": "valuation",
+        "portfolio": "portfolio",
+        "risk": "risk"
+    }
+    
+    print("\nInitializing secure agent connections...")
+    
+    # Secure each agent with AZTP
+    secured_agents = {}
+    for name, agent in agents.items():
+        print(f"Securing {name} agent...")
+        secured_conn = await client.secure_connect(
+            agent,
+            name=f"{aztp_names[name]}-analyst"
+        )
+        
+        # Make the secured agent callable while maintaining sync interface
+        def make_callable(secure_conn):
+            def wrapped_agent(state: AgentState):
+                return secure_conn._agent(state)  # Use the original agent function
+            return wrapped_agent
+            
+        secured_agents[name] = make_callable(secured_conn)
+    
+    # Verify all agents
+    print("\nVerifying agent identities...")
+    verification_tasks = [
+        client.verify_identity(agent.__closure__[0].cell_contents)  # Get the underlying SecureConnection
+        for name, agent in secured_agents.items()
+    ]
+    agents_valid = await asyncio.gather(*verification_tasks)
+    
+    if not all(agents_valid):
+        raise ValueError("Agent verification failed")
+    
+    # Print identities for debugging
+    for name, agent in secured_agents.items():
+        identity = await client.get_identity(agent.__closure__[0].cell_contents)  # Get the underlying SecureConnection
+        print(f"\n{name.title()} Identity:", identity)
+    
+    print("\nAll agents verified successfully!")
+    return secured_agents
 
 def parse_hedge_fund_response(response):
     import json
@@ -41,203 +111,160 @@ def parse_hedge_fund_response(response):
         print(f"Error parsing response: {response}")
         return None
 
+def create_workflow(selected_analysts: list[str], secured_agents: Dict[str, Any]) -> StateGraph:
+    """Create a workflow with selected analysts using secured agents."""
+    # Get analyst nodes using secured agents
+    analyst_nodes = get_analyst_nodes(secured_agents)
+    
+    # Create workflow with selected analysts
+    workflow = StateGraph(AgentState)
+    
+    # Add START node
+    def start_node(state: AgentState):
+        """Initialize the workflow."""
+        return state
+    
+    workflow.add_node("START", start_node)
+    
+    # Add analyst nodes
+    for analyst in selected_analysts:
+        if analyst in analyst_nodes:
+            workflow.add_node(analyst, analyst_nodes[analyst])
+            # Connect START to first analyst
+            if analyst == selected_analysts[0]:
+                workflow.add_edge("START", analyst)
+    
+    # Add edges between analysts in sequence
+    for i in range(len(selected_analysts) - 1):
+        workflow.add_edge(selected_analysts[i], selected_analysts[i + 1])
+    
+    # Add edge from last analyst to END
+    if selected_analysts:
+        workflow.add_edge(selected_analysts[-1], END)
+    
+    # Set entry point
+    workflow.set_entry_point("START")
+    
+    return workflow
 
 ##### Run the Hedge Fund #####
-def run_hedge_fund(
+async def run_hedge_fund(
     tickers: list[str],
     start_date: str,
     end_date: str,
     portfolio: dict,
     show_reasoning: bool = False,
     selected_analysts: list[str] = [],
-    model_name: str = "gpt-4o",
+    model_name: str = "gpt-4",
     model_provider: str = "OpenAI",
 ):
-    # Start progress tracking
-    progress.start()
-
+    """Run the hedge fund with secured agents."""
     try:
-        # Create a new workflow if analysts are customized
-        if selected_analysts:
-            workflow = create_workflow(selected_analysts)
-            agent = workflow.compile()
-        else:
-            agent = app
-
-        final_state = agent.invoke(
-            {
-                "messages": [
-                    HumanMessage(
-                        content="Make trading decisions based on the provided data.",
-                    )
-                ],
-                "data": {
-                    "tickers": tickers,
-                    "portfolio": portfolio,
-                    "start_date": start_date,
-                    "end_date": end_date,
-                    "analyst_signals": {},
+        # Initialize AZTP client
+        api_key = os.getenv("AZTP_API_KEY")
+        if not api_key:
+            raise ValueError("AZTP_API_KEY is required")
+        
+        client = Aztp(api_key=api_key)
+        
+        # Wrap existing agents with secure connections
+        secured_agents = await secure_wrap_agents(client)
+        
+        # Start progress tracking
+        progress.start()
+        
+        try:
+            # Create a new workflow if analysts are customized
+            if selected_analysts:
+                workflow = create_workflow(selected_analysts, secured_agents)
+                agent = workflow.compile()
+            else:
+                # Use all analysts in default order
+                workflow = create_workflow(ANALYST_ORDER, secured_agents)
+                agent = workflow.compile()
+            
+            final_state = agent.invoke(
+                {
+                    "messages": [
+                        HumanMessage(
+                            content="Make trading decisions based on the provided data.",
+                        )
+                    ],
+                    "data": {
+                        "tickers": tickers,
+                        "portfolio": portfolio,
+                        "start_date": start_date,
+                        "end_date": end_date,
+                        "analyst_signals": {},
+                    },
+                    "metadata": {
+                        "show_reasoning": show_reasoning,
+                        "model_name": model_name,
+                        "model_provider": model_provider,
+                    },
                 },
-                "metadata": {
-                    "show_reasoning": show_reasoning,
-                    "model_name": model_name,
-                    "model_provider": model_provider,
-                },
-            },
-        )
+            )
+            
+            return {
+                "decisions": parse_hedge_fund_response(final_state["messages"][-1].content),
+                "analyst_signals": final_state["data"]["analyst_signals"],
+            }
+        finally:
+            # Stop progress tracking
+            progress.stop()
+    except Exception as e:
+        print(f"Error running hedge fund: {e}")
+        if hasattr(client, 'config'):
+            print("\nCurrent configuration:")
+            print(f"Base URL: {client.config.base_url}")
+            print(f"Environment: {client.config.environment}")
+        return None
 
-        return {
-            "decisions": parse_hedge_fund_response(final_state["messages"][-1].content),
-            "analyst_signals": final_state["data"]["analyst_signals"],
-        }
-    finally:
-        # Stop progress tracking
-        progress.stop()
-
-
-def start(state: AgentState):
-    """Initialize the workflow with the input message."""
-    return state
-
-
-def create_workflow(selected_analysts=None):
-    """Create the workflow with selected analysts."""
-    workflow = StateGraph(AgentState)
-    workflow.add_node("start_node", start)
-
-    # Get analyst nodes from the configuration
-    analyst_nodes = get_analyst_nodes()
-
-    # Default to all analysts if none selected
-    if selected_analysts is None:
-        selected_analysts = list(analyst_nodes.keys())
-    # Add selected analyst nodes
-    for analyst_key in selected_analysts:
-        node_name, node_func = analyst_nodes[analyst_key]
-        workflow.add_node(node_name, node_func)
-        workflow.add_edge("start_node", node_name)
-
-    # Always add risk and portfolio management
-    workflow.add_node("risk_management_agent", risk_management_agent)
-    workflow.add_node("portfolio_management_agent", portfolio_management_agent)
-
-    # Connect selected analysts to risk management
-    for analyst_key in selected_analysts:
-        node_name = analyst_nodes[analyst_key][0]
-        workflow.add_edge(node_name, "risk_management_agent")
-
-    workflow.add_edge("risk_management_agent", "portfolio_management_agent")
-    workflow.add_edge("portfolio_management_agent", END)
-
-    workflow.set_entry_point("start_node")
-    return workflow
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run the hedge fund trading system")
+def main():
+    parser = argparse.ArgumentParser(description="AI Hedge Fund")
     parser.add_argument(
-        "--initial-cash",
-        type=float,
-        default=100000.0,
-        help="Initial cash position. Defaults to 100000.0)"
+        "--tickers",
+        type=str,
+        help="Comma-separated list of stock tickers (e.g., AAPL,MSFT,NVDA)",
+        required=True,
     )
-    parser.add_argument(
-        "--margin-requirement",
-        type=float,
-        default=0.0,
-        help="Initial margin requirement. Defaults to 0.0"
-    )
-    parser.add_argument("--tickers", type=str, required=True, help="Comma-separated list of stock ticker symbols")
     parser.add_argument(
         "--start-date",
         type=str,
         help="Start date (YYYY-MM-DD). Defaults to 3 months before end date",
+        required=False,
     )
-    parser.add_argument("--end-date", type=str, help="End date (YYYY-MM-DD). Defaults to today")
-    parser.add_argument("--show-reasoning", action="store_true", help="Show reasoning from each agent")
     parser.add_argument(
-        "--show-agent-graph", action="store_true", help="Show the agent graph"
+        "--end-date",
+        type=str,
+        help="End date (YYYY-MM-DD). Defaults to today",
+        required=False,
     )
-
+    parser.add_argument(
+        "--portfolio",
+        type=str,
+        help="Portfolio allocation (JSON)",
+        default="{}",
+    )
+    parser.add_argument(
+        "--show-reasoning",
+        action="store_true",
+        help="Show agent reasoning",
+    )
+    parser.add_argument(
+        "--analysts",
+        type=str,
+        nargs="+",
+        help="List of analysts to use",
+        choices=ANALYST_ORDER,
+        default=[],
+    )
+    
     args = parser.parse_args()
-
+    
     # Parse tickers from comma-separated string
     tickers = [ticker.strip() for ticker in args.tickers.split(",")]
-
-    # Select analysts
-    selected_analysts = None
-    choices = questionary.checkbox(
-        "Select your AI analysts.",
-        choices=[questionary.Choice(display, value=value) for display, value in ANALYST_ORDER],
-        instruction="\n\nInstructions: \n1. Press Space to select/unselect analysts.\n2. Press 'a' to select/unselect all.\n3. Press Enter when done to run the hedge fund.\n",
-        validate=lambda x: len(x) > 0 or "You must select at least one analyst.",
-        style=questionary.Style(
-            [
-                ("checkbox-selected", "fg:green"),
-                ("selected", "fg:green noinherit"),
-                ("highlighted", "noinherit"),
-                ("pointer", "noinherit"),
-            ]
-        ),
-    ).ask()
-
-    if not choices:
-        print("\n\nInterrupt received. Exiting...")
-        sys.exit(0)
-    else:
-        selected_analysts = choices
-        print(f"\nSelected analysts: {', '.join(Fore.GREEN + choice.title().replace('_', ' ') + Style.RESET_ALL for choice in choices)}\n")
-
-    # Select LLM model
-    model_choice = questionary.select(
-        "Select your LLM model:",
-        choices=[questionary.Choice(display, value=value) for display, value, _ in LLM_ORDER],
-        style=questionary.Style([
-            ("selected", "fg:green bold"),
-            ("pointer", "fg:green bold"),
-            ("highlighted", "fg:green"),
-            ("answer", "fg:green bold"),
-        ])
-    ).ask()
-
-    if not model_choice:
-        print("\n\nInterrupt received. Exiting...")
-        sys.exit(0)
-    else:
-        # Get model info using the helper function
-        model_info = get_model_info(model_choice)
-        if model_info:
-            model_provider = model_info.provider.value
-            print(f"\nSelected {Fore.CYAN}{model_provider}{Style.RESET_ALL} model: {Fore.GREEN + Style.BRIGHT}{model_choice}{Style.RESET_ALL}\n")
-        else:
-            model_provider = "Unknown"
-            print(f"\nSelected model: {Fore.GREEN + Style.BRIGHT}{model_choice}{Style.RESET_ALL}\n")
-
-    # Create the workflow with selected analysts
-    workflow = create_workflow(selected_analysts)
-    app = workflow.compile()
-
-    if args.show_agent_graph:
-        file_path = ""
-        if selected_analysts is not None:
-            for selected_analyst in selected_analysts:
-                file_path += selected_analyst + "_"
-            file_path += "graph.png"
-        save_graph_as_png(app, file_path)
-
-    # Validate dates if provided
-    if args.start_date:
-        try:
-            datetime.strptime(args.start_date, "%Y-%m-%d")
-        except ValueError:
-            raise ValueError("Start date must be in YYYY-MM-DD format")
-
-    if args.end_date:
-        try:
-            datetime.strptime(args.end_date, "%Y-%m-%d")
-        except ValueError:
-            raise ValueError("End date must be in YYYY-MM-DD format")
-
+    
     # Set the start and end dates
     end_date = args.end_date or datetime.now().strftime("%Y-%m-%d")
     if not args.start_date:
@@ -246,36 +273,49 @@ if __name__ == "__main__":
         start_date = (end_date_obj - relativedelta(months=3)).strftime("%Y-%m-%d")
     else:
         start_date = args.start_date
-
-    # Initialize portfolio with cash amount and stock positions
-    portfolio = {
-        "cash": args.initial_cash,  # Initial cash amount
-        "margin_requirement": args.margin_requirement,  # Initial margin requirement
-        "positions": {
-            ticker: {
-                "long": 0,  # Number of shares held long
-                "short": 0,  # Number of shares held short
-                "long_cost_basis": 0.0,  # Average cost basis for long positions
-                "short_cost_basis": 0.0,  # Average price at which shares were sold short
-            } for ticker in tickers
-        },
-        "realized_gains": {
-            ticker: {
-                "long": 0.0,  # Realized gains from long positions
-                "short": 0.0,  # Realized gains from short positions
-            } for ticker in tickers
-        }
-    }
-
+    
+    # Parse portfolio JSON
+    try:
+        portfolio = json.loads(args.portfolio)
+    except json.JSONDecodeError:
+        print("Error: Invalid portfolio JSON")
+        sys.exit(1)
+    
+    # Get model choice
+    model_choices = [
+        "gpt-4 (OpenAI)",
+        "gpt-3.5-turbo (OpenAI)",
+        "claude-3-opus-20240229 (Anthropic)",
+        "claude-3-sonnet-20240229 (Anthropic)",
+        "mixtral-8x7b-32768 (Groq)",
+    ]
+    model_choice = questionary.select(
+        "Select LLM model:",
+        choices=model_choices,
+        default=model_choices[0],
+    ).ask()
+    
+    # Extract model name and provider
+    model_name = model_choice.split(" (")[0]
+    model_provider = model_choice.split("(")[1].rstrip(")")
+    
     # Run the hedge fund
-    result = run_hedge_fund(
+    result = asyncio.run(run_hedge_fund(
         tickers=tickers,
         start_date=start_date,
         end_date=end_date,
         portfolio=portfolio,
         show_reasoning=args.show_reasoning,
-        selected_analysts=selected_analysts,
-        model_name=model_choice,
+        selected_analysts=args.analysts,
+        model_name=model_name,
         model_provider=model_provider,
-    )
-    print_trading_output(result)
+    ))
+    
+    if result:
+        print_trading_output(result)
+    else:
+        print("\nHedge fund execution failed.")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()

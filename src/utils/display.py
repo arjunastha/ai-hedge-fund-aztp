@@ -7,7 +7,7 @@ import os
 def sort_analyst_signals(signals):
     """Sort analyst signals in a consistent order."""
     # Create order mapping from ANALYST_ORDER
-    analyst_order = {display: idx for idx, (display, _) in enumerate(ANALYST_ORDER)}
+    analyst_order = {name: idx for idx, name in enumerate(ANALYST_ORDER)}
     analyst_order["Risk Management"] = len(ANALYST_ORDER)  # Add Risk Management at the end
 
     return sorted(signals, key=lambda x: analyst_order.get(x[0], 999))

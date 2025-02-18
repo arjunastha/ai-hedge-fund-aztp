@@ -1,8 +1,8 @@
-# AI Hedge Fund
+# AI Hedge Fund with AZTP Security
 
-This is a proof of concept for an AI-powered hedge fund.  The goal of this project is to explore the use of AI to make trading decisions.  This project is for **educational** purposes only and is not intended for real trading or investment.
+This is a proof of concept for an AI-powered hedge fund with secure agent identity verification using AZTP (Agentic Zero Trust Protocol) from astha.ai. The goal of this project is to explore the use of AI to make trading decisions while ensuring secure and verified agent interactions. This project is for **educational** purposes only and is not intended for real trading or investment.
 
-This system employs several agents working together:
+This system employs several secure agents working together:
 
 1. Ben Graham Agent - The godfather of value investing, only buys hidden gems with a margin of safety
 2. Bill Ackman Agent - An activist investors, takes bold positions and pushes for change
@@ -14,8 +14,13 @@ This system employs several agents working together:
 8. Risk Manager - Calculates risk metrics and sets position limits
 9. Portfolio Manager - Makes final trading decisions and generates orders
 
-<img width="1117" alt="Screenshot 2025-02-09 at 11 26 14 AM" src="https://github.com/user-attachments/assets/16509cc2-4b64-4c67-8de6-00d224893d58" />
+Each agent is secured and verified using AZTP, ensuring:
+- Unique AZTP identities for each agent based on the SPIFFE ID standard (www.spiffe.io)
+- Secure inter-agent communication
+- Identity verification before execution
+- Zero-trust security model
 
+<img width="1117" alt="Screenshot 2025-02-09 at 11 26 14 AM" src="https://github.com/user-attachments/assets/16509cc2-4b64-4c67-8de6-00d224893d58" />
 
 **Note**: the system simulates trading decisions, it does not actually trade.
 
@@ -33,12 +38,22 @@ This project is for **educational and research purposes only**.
 
 By using this software, you agree to use it solely for learning purposes.
 
+## Prerequisites
+
+- Python 3.8 or higher
+- Poetry for dependency management
+- OpenAI API key (or other supported LLM providers)
+- AZTP API key (https://astha.ai)
+- Local AZTP service running (or configured endpoint)
+- Financial Datasets API key (optional, for extended stock data)
+
 ## Table of Contents
 - [Setup](#setup)
 - [Usage](#usage)
   - [Running the Hedge Fund](#running-the-hedge-fund)
   - [Running the Backtester](#running-the-backtester)
 - [Project Structure](#project-structure)
+- [AZTP Security Features](#aztp-security-features)
 - [Contributing](#contributing)
 - [Feature Requests](#feature-requests)
 - [License](#license)
@@ -69,16 +84,19 @@ cp .env.example .env
 
 4. Set your API keys:
 ```bash
-# For running LLMs hosted by openai (gpt-4o, gpt-4o-mini, etc.)
-# Get your OpenAI API key from https://platform.openai.com/
+# AZTP API key for secure agent communication
+AZTP_API_KEY=your-aztp-api-key
+
+# For running LLMs hosted by openai (gpt-4, gpt-4-turbo, etc.)
 OPENAI_API_KEY=your-openai-api-key
 
 # For running LLMs hosted by groq (deepseek, llama3, etc.)
-# Get your Groq API key from https://groq.com/
 GROQ_API_KEY=your-groq-api-key
 
+# For running LLMs hosted by Anthropic (claude-3, etc.)
+ANTHROPIC_API_KEY=your-anthropic-api-key
+
 # For getting financial data to power the hedge fund
-# Get your Financial Datasets API key from https://financialdatasets.ai/
 FINANCIAL_DATASETS_API_KEY=your-financial-datasets-api-key
 ```
 
@@ -95,17 +113,21 @@ For any other ticker, you will need to set the `FINANCIAL_DATASETS_API_KEY` in t
 poetry run python src/main.py --ticker AAPL,MSFT,NVDA
 ```
 
+The system will:
+1. Initialize secure connections for all agents
+2. Verify agent identities using AZTP
+3. Create a secure workflow between agents
+4. Execute the trading strategy with verified agents
+
 **Example Output:**
-<img width="992" alt="Screenshot 2025-01-06 at 5 50 17 PM" src="https://github.com/user-attachments/assets/e8ca04bf-9989-4a7d-a8b4-34e04666663b" />
+<img width="992" alt="Screenshot 2025-01-06 at 5 50 17 PM" src="https://github.com/user-attachments/assets/e8ca04bf-9989-4a7d-a8b4-34e04666663b" />
 
-You can also specify a `--show-reasoning` flag to print the reasoning of each agent to the console.
-
+Additional options:
 ```bash
+# Show agent reasoning
 poetry run python src/main.py --ticker AAPL,MSFT,NVDA --show-reasoning
-```
-You can optionally specify the start and end dates to make decisions for a specific time period.
 
-```bash
+# Specify date range
 poetry run python src/main.py --ticker AAPL,MSFT,NVDA --start-date 2024-01-01 --end-date 2024-03-01 
 ```
 
@@ -116,19 +138,18 @@ poetry run python src/backtester.py --ticker AAPL,MSFT,NVDA
 ```
 
 **Example Output:**
-<img width="941" alt="Screenshot 2025-01-06 at 5 47 52 PM" src="https://github.com/user-attachments/assets/00e794ea-8628-44e6-9a84-8f8a31ad3b47" />
+<img width="941" alt="Screenshot 2025-01-06 at 5 47 52 PM" src="https://github.com/user-attachments/assets/00e794ea-8628-44e6-9a84-8f8a31ad3b47" />
 
-You can optionally specify the start and end dates to backtest over a specific time period.
-
+Optional date range:
 ```bash
 poetry run python src/backtester.py --ticker AAPL,MSFT,NVDA --start-date 2024-01-01 --end-date 2024-03-01
 ```
 
 ## Project Structure 
 ```
-ai-hedge-fund/
+ai-hedge-fund-aztp/
 ├── src/
-│   ├── agents/                   # Agent definitions and workflow
+│   ├── agents/                   # Secure agent definitions
 │   │   ├── bill_ackman.py        # Bill Ackman agent
 │   │   ├── fundamentals.py       # Fundamental analysis agent
 │   │   ├── portfolio_manager.py  # Portfolio management agent
@@ -139,11 +160,35 @@ ai-hedge-fund/
 │   │   ├── warren_buffett.py     # Warren Buffett agent
 │   ├── tools/                    # Agent tools
 │   │   ├── api.py                # API tools
+│   ├── utils/                    # Utility functions
+│   │   ├── analysts.py           # Analyst configuration
+│   │   ├── display.py            # Display utilities
 │   ├── backtester.py             # Backtesting tools
-│   ├── main.py # Main entry point
-├── pyproject.toml
+│   ├── main.py                   # Main entry point with AZTP integration
+├── pyproject.toml                # Project dependencies
+├── .env.example                  # Example environment variables
 ├── ...
 ```
+
+## AZTP Security Features
+
+This implementation uses AZTP to provide:
+
+1. **Agent Identity**
+   - Each agent has a unique SPIFFE ID
+   - Identities are verified before execution
+   - Format: `aztp://aztp.network/workload/production/node/{agent-name}-analyst`
+
+
+2. **Agent Verification**
+   - Agents are verified before joining the workflow
+   - Identity status is checked and logged
+   - Failed verifications prevent execution
+
+3. **Clean Separation**
+   - Security concerns are handled by AZTP
+   - Agent logic remains unchanged
+   - Easy to maintain and update
 
 ## Contributing
 
@@ -153,7 +198,7 @@ ai-hedge-fund/
 4. Push to the branch
 5. Create a Pull Request
 
-**Important**: Please keep your pull requests small and focused.  This will make it easier to review and merge.
+**Important**: Please keep your pull requests small and focused. This will make it easier to review and merge.
 
 ## Feature Requests
 
